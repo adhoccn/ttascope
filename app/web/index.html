@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TTAScope · 中文 AI 生成文本检测</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>%F0%9F%94%8D</text></svg>">
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --line:#e3e6ea; --ink:#1f2328;
+    --sub:#5c6470; --accent:#1f6feb; --ai:#c0392b; --hu:#1e7e5a;
+    --warn:#b26a00; --chip:#eef2f7;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  header{padding:18px 28px;background:var(--card);border-bottom:1px solid var(--line);
+         display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  header h1{margin:0;font-size:18px;font-weight:600}
+  header .sub{color:var(--sub);font-size:12.5px}
+  main{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
+        padding:16px 18px;margin-bottom:16px}
+  .card h2{margin:0 0 12px;font-size:14px;font-weight:600;color:var(--ink)}
+  label{font-size:12.5px;color:var(--sub);display:block;margin-bottom:6px}
+  textarea{width:100%;min-height:200px;resize:vertical;padding:12px;
+           border:1px solid var(--line);border-radius:6px;font-size:13px;
+           font-family:ui-monospace,Consolas,monospace;line-height:1.7}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-top:12px}
+  select,input,button{padding:8px 14px;border-radius:6px;border:1px solid var(--line);
+                font-size:13px;background:var(--card);color:var(--ink)}
+  input[type=number]{width:96px;padding:8px 10px}
+  button{background:var(--accent);border-color:var(--accent);color:#fff;cursor:pointer}
+  button:hover{filter:brightness(1.06)}
+  button.ghost{background:var(--card);color:var(--ink);border-color:var(--line)}
+  button:disabled{opacity:.6;cursor:default}
+  .hint{font-size:12px;color:var(--sub);margin-top:8px}
+  .hint.bad{color:#a33;font-weight:600}
+  .hint.warn{color:#8a5a00}
+  .hint.ok{color:var(--hu)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+  .kpi{background:var(--chip);border-radius:6px;padding:10px 12px}
+  .kpi .k{font-size:11.5px;color:var(--sub)}
+  .kpi .v{font-size:19px;font-weight:600;margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{padding:7px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{color:var(--sub);font-weight:600}
+  td.num{font-family:ui-monospace,Consolas,monospace}
+  .tag{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11.5px}
+  .tag.ai{background:#fbe9e7;color:var(--ai)}
+  .tag.hu{background:#e6f4ec;color:var(--hu)}
+  .bar{height:6px;border-radius:3px;background:#e9edf2;overflow:hidden;min-width:70px}
+  .bar > i{display:block;height:100%;background:var(--ai)}
+  .err{background:#fdecea;color:#8a1f14;padding:10px 12px;border-radius:6px;
+       font-size:12.5px;white-space:pre-wrap}
+  .skip{color:var(--sub);font-size:12.5px}
+  .uprow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .filebtn{position:relative;overflow:hidden;display:inline-block;cursor:pointer;
+           background:var(--chip);border:1px solid var(--line);color:var(--fg);
+           border-radius:6px;padding:6px 12px;font-size:12.5px}
+  .filebtn input{position:absolute;left:0;top:0;opacity:0;width:100%;height:100%;
+                 cursor:pointer}
+  .filebtn:hover{background:#e4e8ee}
+  .err.warn{background:#fff6e0;color:#8a5a00}
+  .foot{color:var(--sub);font-size:12px;line-height:1.8}
+  code{background:var(--chip);padding:1px 5px;border-radius:3px;font-size:12px}
+  .verdict{font-size:15px;font-weight:600;padding:10px 14px;border-radius:6px;
+           display:inline-block;margin-bottom:10px}
+  .verdict.ai{background:#fbe9e7;color:var(--ai)}
+  .verdict.hu{background:#e6f4ec;color:var(--hu)}
+</style>
+</head>
+<body>
+<header>
+  <h1>TTAScope</h1>
+  <span class="sub">面向未知大语言模型的中文 AI 生成文本检测 · 判别漂移诊断 + 无标签批校正</span>
+</header>
+
+<main>
+  <div class="card">
+    <h2>输入文本</h2>
+    <div class="uprow">
+      <label class="filebtn">
+        上传文件
+        <input type="file" id="file" multiple
+               accept=".txt,.md,.markdown,.csv,.jsonl,.ndjson,.log,.text">
+      </label>
+      <span class="hint" id="filenames" style="margin:0">未选择文件（支持 txt / md / csv / jsonl，可多选）</span>
+    </div>
+    <textarea id="texts" placeholder="粘贴待检测文本。&#10;批次场景：一行一条；&#10;长文场景：直接整篇粘贴，在下方选择「按段落 / 按句 / 按字数」切分。&#10;数量门槛随特征集而定：字符 2-4gram ≥ 20 条，15D ≥ 50 条。"></textarea>
+    <div class="row">
+      <div>
+        <label>切分方式</label>
+        <select id="split">
+          <option value="line">按行（一行一条）</option>
+          <option value="para">按段落（空行分段）</option>
+          <option value="sent">按句成块（长文推荐）</option>
+          <option value="chunk">按字数切块</option>
+          <option value="whole">整篇作为一条</option>
+        </select>
+      </div>
+      <div>
+        <label>块大小（字）</label>
+        <input type="number" id="size" value="300" min="50" max="2000" step="50">
+      </div>
+      <div>
+        <label>特征集</label>
+        <select id="feat"><option value="15D">15D 手工特征</option></select>
+      </div>
+      <div>
+        <label>校正方式</label>
+        <select id="mode">
+          <option value="auto">auto（无标签准则自动选参）</option>
+          <option value="none">none（不校正）</option>
+          <option value="bn">bn（批标准化对齐）</option>
+          <option value="bnc">bnc（批中心对齐）</option>
+          <option value="em_l1.0">em_l1.0（类条件对齐，λ=1）</option>
+          <option value="em_l0.5">em_l0.5（类条件对齐，λ=0.5）</option>
+          <option value="conf_l1.0_k0.50">conf_l1.0_k0.50（高置信选通）</option>
+        </select>
+      </div>
+      <button id="run">运行检测</button>
+      <button class="ghost" id="demo">载入示例</button>
+      <button class="ghost" id="clear">清空</button>
+    </div>
+    <div class="hint" id="count">0 条</div>
+  </div>
+
+  <div id="err"></div>
+
+  <div class="card" id="doccard" hidden>
+    <h2>整篇结论</h2>
+    <div id="verdict"></div>
+    <div class="grid" id="dockpis"></div>
+    <div class="hint" id="compare">正在用另一特征集做交叉对照…</div>
+    <div class="hint" id="dochint"></div>
+  </div>
+
+  <div class="card" id="exportcard" hidden>
+    <h2>报告导出</h2>
+    <div class="row">
+      <button class="ghost" id="dlmd">下载 Markdown 报告</button>
+      <button class="ghost" id="dlcsv">下载逐段分析 CSV</button>
+    </div>
+    <div class="hint" id="dlhint"></div>
+  </div>
+
+  <div class="card" id="summary" hidden>
+    <h2>批次诊断</h2>
+    <div class="grid" id="kpis"></div>
+    <div class="hint" id="diagline"></div>
+  </div>
+
+  <div class="card" id="candcard" hidden>
+    <h2>候选校正变体（无标签准则打分，越高越好）</h2>
+    <table><thead><tr><th>变体</th><th>预测 macro-F1</th><th></th></tr></thead>
+      <tbody id="cands"></tbody></table>
+  </div>
+
+  <div class="card" id="itemcard" hidden>
+    <h2>逐条判定（按 P(AI) 降序）</h2>
+    <table><thead><tr><th>#</th><th>P(AI)</th><th style="width:120px"></th>
+      <th>判定</th><th>文本</th></tr></thead><tbody id="items"></tbody></table>
+  </div>
+
+  <div class="card">
+    <div class="foot">
+      <b>读法</b>：Ξ<sub>ai</sub> 是漂移在判别方向上的有符号投影，决定跨模型衰减；
+      Δ<sub>T</sub> 是目标域实测类间间隔；<code>预测 F1</code> 由推论 1
+      （macro-F1 ≈ 1 − Φ(−Δ′/2)）给出，与实测的偏差 MAE 约 0.042。
+      <code>选中的变体</code>由一维两分量 GMM 在<b>无标签</b>的测试分数上解析预测
+      macro-F1 后取最优，全程不使用目标域标签。<br>
+      <b>长文怎么用</b>：整篇粘进来，切分方式选「按句成块」或「按字数切块」。
+      切出的块数必须达到门槛才能检测，不足时按钮禁用并提示还差几条——减小块
+      大小即可增加块数（每块建议不少于 50 字，过小会丢上下文特征）。<br>
+      <b>门槛为何按特征集不同</b>：小批次重采样实验（n=10/20/30/40）显示，
+      15 维手工特征在该区间类条件对齐的期望增益为负（−0.12~−0.03，近三到七成折
+      反而变差），因此要求 ≥ 50 条；字符 2-4gram 类间距更大，同期仍为
+      +0.12~+0.19，20 条即可。改用 15D 时请注意补足条数，
+      否则请优先使用字符 2-4gram。<br>
+      <b>适用边界</b>：方法作用于<b>一批</b>文本而非单条；批次类先验严重失衡时
+      会退化为不校正（可检测但确实受限）。结论适用于"衰减尚未饱和"的目标，
+      在多数变体已接近 1.0 的场景不宜外推。
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+// 反代会剥掉子路径前缀，接口地址一律由当前页面路径推导，不写死也不依赖相对解析
+const BASE = location.pathname.replace(/[^\/]*$/, '');
+const api = p => BASE + p;
+
+// 批次规模门槛由特征集决定，数值从 /api/models 下发（后端单一数据源）。
+// 15 维手工特征类间距小，少于 50 条时类条件对齐的期望增益为负，必须拦住；
+// 字符 2-4gram 类间距大，20 条即可。
+let GATE = {};                       // {feat: {min_n, rec_n}}
+const DEFAULT_GATE = {min_n: 50, rec_n: 100};
+function gateOf(feat){ return GATE[feat] || DEFAULT_GATE; }
+function minFor(feat){ return gateOf(feat).min_n; }
+function recFor(feat){ return gateOf(feat).rec_n; }
+// 最近一次检测结果与其输入，供报告导出使用
+let LAST = null;
+// 已上传文件的元信息，写进报告的溯源部分
+let SRCFILES = [];
+
+const MAX_FILE = 8 * 1024 * 1024;   // 单文件 8 MB 上限
+
+// 中文世界大量文本仍是 GBK，直接按 UTF-8 读会出现成片 U+FFFD。
+// 用替换字符数量做个轻量判定，哪个编码坏字符少就用哪个。
+async function readSmart(file){
+  const u8 = new Uint8Array(await file.arrayBuffer());
+  const count = s => (s.match(/\uFFFD/g) || []).length;
+  const utf8 = new TextDecoder('utf-8').decode(u8);
+  const badU = count(utf8);
+  if(badU > 0){
+    try{
+      const gbk = new TextDecoder('gbk').decode(u8);
+      if(count(gbk) < badU) return {text: gbk, enc: 'GBK'};
+    }catch(e){ /* 浏览器不支持 gbk 时按 UTF-8 走 */ }
+  }
+  return {text: utf8, enc: 'UTF-8'};
+}
+
+function splitCsvRow(line){
+  // 最小可用的 CSV 行解析：支持双引号包裹与 "" 转义
+  const out = []; let cur = '', q = false;
+  for(let i = 0; i < line.length; i++){
+    const c = line[i];
+    if(q){
+      if(c === '"'){
+        if(line[i+1] === '"'){ cur += '"'; i++; } else q = false;
+      }else cur += c;
+    }else if(c === '"') q = true;
+    else if(c === ','){ out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+
+function csvPick(rows){
+  // 优先认表头里的常见列名；认不出就取平均长度最大的那一列
+  const head = rows[0].map(h => String(h).trim().toLowerCase());
+  const KEY = ['text', 'content', 'body', 'paragraph', 'sentence', 'abstract',
+               '正文', '文本', '内容', '段落'];
+  for(const k of KEY){
+    const j = head.indexOf(k);
+    if(j >= 0) return j;
+  }
+  let best = 0, bestLen = -1;
+  for(let j = 0; j < rows[0].length; j++){
+    let tot = 0, cnt = 0;
+    for(let i = 1; i < Math.min(rows.length, 30); i++){
+      tot += String(rows[i][j] ?? '').length; cnt++;
+    }
+    const avg = cnt ? tot / cnt : 0;
+    if(avg > bestLen){ bestLen = avg; best = j; }
+  }
+  return best;
+}
+
+function parseCsv(text){
+  const rows = text.split(/\r?\n/).filter(l => l.trim() !== '')
+                   .map(splitCsvRow);
+  if(!rows.length) return [];
+  const j = csvPick(rows);
+  const KEY = /^(text|content|body|paragraph|sentence|abstract|正文|文本|内容|段落)$/;
+  const head = rows[0].map(h => String(h).trim().toLowerCase());
+  // 首行可能是列名也可能是第一条数据。列名通常很短且明显短于数据行，
+  // 两个条件满足其一即跳过首行，避免把表头当成待检测文本。
+  const shortAll = rows[0].every(c => String(c).trim().length <= 16);
+  const longerData = rows.length > 1 &&
+    String(rows[1][j] ?? '').length > Math.max(4, String(rows[0][j] ?? '').length * 1.5);
+  const start = (head.some(h => KEY.test(h)) || (shortAll && longerData)) ? 1 : 0;
+  return rows.slice(start).map(r => String(r[j] ?? '').trim())
+             .filter(Boolean);
+}
+
+function parseJsonl(text){
+  const KEY = ['text', 'content', 'body', 'paragraph', 'abstract',
+               '正文', '文本', '内容'];
+  return text.split(/\r?\n/).filter(l => l.trim() !== '').map(l=>{
+    try{
+      const o = JSON.parse(l);
+      if(typeof o === 'string') return o;
+      for(const k of KEY) if(typeof o[k] === 'string') return o[k];
+      return JSON.stringify(o);
+    }catch(e){ return l; }        // 不是 JSON 就按普通行处理
+  }).filter(Boolean);
+}
+
+async function ingest(files){
+  const list = Array.from(files || []);
+  if(!list.length) return;
+  const parts = [], meta = [], skipped = [];
+  for(const f of list){
+    if(f.size > MAX_FILE){
+      skipped.push(f.name + '（超过 8 MB）'); continue;
+    }
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    const {text, enc} = await readSmart(f);
+    let lines = [];
+    if(ext === 'csv') lines = parseCsv(text);
+    else if(ext === 'jsonl' || ext === 'ndjson') lines = parseJsonl(text);
+    else lines = text.split(/\r?\n/).filter(l => l.trim() !== '');
+    parts.push(lines.join('\n'));
+    meta.push({name: f.name, bytes: f.size, enc: enc,
+               lines: lines.length, chars: lines.join('').length});
+  }
+  if(!parts.length){
+    $('#filenames').textContent = '没有可用文件' +
+      (skipped.length ? '（已跳过：' + skipped.join('、') + '）' : '');
+    return;
+  }
+  // 按行模式每行即一条，直接拼接；长文模式下文件之间用空行隔开，避免粘连成一段
+  const joiner = $('#split').value === 'line' ? '\n' : '\n\n';
+  $('#texts').value = ($('#texts').value.trim() ? $('#texts').value + joiner : '')
+                    + parts.join(joiner);
+  SRCFILES = SRCFILES.concat(meta);
+  const kb = m => (m.bytes / 1024).toFixed(1) + ' KB';
+  $('#filenames').textContent = SRCFILES.map(
+    m => `${m.name}（${kb(m)} · ${m.enc} · ${m.lines} 行）`).join('　')
+    + (skipped.length ? '　已跳过：' + skipped.join('、') : '');
+  setCount();
+}
+
+$('#file').addEventListener('change', async e=>{
+  try{ await ingest(e.target.files); }
+  catch(err){ $('#filenames').textContent = '读取失败：' + (err.message || err); }
+  e.target.value = '';            // 允许重复选同一个文件
+});
+
+function curFeat(){ return $('#feat').value; }
+
+const DEMO = [
+  "人工智能正在深刻改变各行各业的生产方式。首先，它能够显著提升生产效率；其次，它可以降低运营成本；最后，它还能够改善用户体验。综上所述，人工智能技术的应用前景十分广阔。",
+  "机器学习是人工智能的重要分支，其核心思想是通过数据驱动的方式让模型自动学习规律。近年来，深度学习在图像识别、自然语言处理等领域取得了突破性进展。",
+  "随着数字化转型的深入推进，企业需要构建更加敏捷的技术架构。一方面要保障系统的稳定性，另一方面也要兼顾可扩展性，二者需要有机结合。",
+  "在大数据的时代背景下，数据已经成为重要的生产要素。如何有效地采集、存储、分析和利用数据，是每个组织都必须面对的关键问题。",
+  "自然语言处理技术旨在让计算机理解并生成人类语言。得益于预训练模型的发展，机器翻译、文本摘要等任务的性能得到了大幅提升。",
+  "云计算提供了弹性可伸缩的计算资源，使企业无需自建机房即可快速部署应用。与此同时，安全性与合规性始终是云服务的核心议题。",
+  "深度学习模型通过多层非线性变换自动提取特征，避免了繁琐的人工特征工程，但同时也带来了可解释性方面的挑战。",
+  "物联网技术将感知层、网络层与应用层有机结合，实现了设备之间的互联互通，为智慧城市建设提供了重要支撑。",
+  "在进行系统设计时，需要综合考虑性能、成本、可维护性等多方面因素，权衡取舍后确定最终的技术方案。",
+  "研究表明，该算法在多个公开数据集上均取得了领先的结果，验证了所提方法的有效性与鲁棒性。",
+  "总体而言，人工智能技术的发展既带来机遇也带来挑战，需要在技术创新与伦理规范之间取得平衡。",
+  "综上所述，该方法在准确性与效率两个维度上均优于基线方案，具有良好的应用前景与推广价值。",
+  "昨天跟我姐去逛街，本来就想随便看看，结果试了一件外套特别合身，一冲动就买了，回来想想其实也不便宜。",
+  "说实话我也不知道该咋整，反正就这么拖着吧，说不定过两天自己就好了，我向来不爱去医院。",
+  "早上起晚了两分钟，公交刚好开走，气死我了，最后只能打车，还堵了一路，到公司都迟到了。",
+  "我家那只猫半夜又开始折腾了，把卫生纸扯得满地都是，我凌晨三点爬起来收拾，真的服了。",
+  "这电影吧，前半段还行，后面就有点乱了，我看得云里雾里的，出来以后朋友说他也差不多没看懂。",
+  "刚煮的面忘记关火，汤都溢出来了，灶台一片狼藉，擦了半天，下次真的不敢一边刷手机一边做饭了。",
+  "我爸昨天突然打电话问我最近咋样，我说挺好的，他就嗯了一声，然后我俩沉默了半天，最后他说那挂了吧。",
+  "下午在办公室犯困，冲了杯咖啡，结果手抖撒了一桌子，键盘差点报废，同事在旁边笑得不行。",
+  "最近也不知道为啥，老是睡不好，躺床上翻来覆去，脑子里乱七八糟的事一件接一件。",
+  "楼下那家包子铺换了老板，味道明显不如以前了，皮厚馅少，我吃了两口就不想吃了。",
+  "跟朋友约了吃饭，结果他迟到了半个多小时，理由是找不到停车位，我也没法说啥，就当等风来吧。",
+  "今天天气还挺好的，就是风有点大，出去走了一圈，回来头发全乱了，不过心情倒是舒畅了不少。"
+];
+
+const DEMO_LONG = [
+  "人工智能正在深刻改变各行各业的生产方式，其重要性不言而喻。首先，它能够显著提升生产效率，把大量重复性劳动交给自动化系统完成；其次，它可以有效降低运营成本，减少人为失误带来的损失；最后，它还能够改善用户体验，通过个性化推荐与智能客服提升服务质量。",
+  "从技术层面看，机器学习是人工智能的重要分支，其核心思想是通过数据驱动的方式让模型自动学习规律，而不是依靠人工编写规则。近年来，得益于算力的快速增长与大规模数据集的积累，深度学习在图像识别、语音识别、自然语言处理等领域取得了突破性进展，部分任务的表现已经接近甚至超过人类水平。",
+  "然而，技术进步也带来了新的挑战。一方面，深度模型的可解释性仍然不足，在医疗、司法等高风险场景中难以直接部署；另一方面，训练数据中的偏见会被模型放大，造成不公平的判定结果。因此，研究者提出了包括对抗训练、公平性约束在内的多种缓解手段，但从工程角度看，这些方法的成本依然偏高。",
+  "在产业落地层面，企业面临的往往不是算法选型问题，而是数据治理问题。多数组织的数据分散在不同业务系统中，口径不一致、缺失严重、标注成本高昂，直接决定了模型效果的上限。实践表明，先把数据管道理顺，再谈模型迭代，往往比更换更先进的架构收益更大。",
+  "与此同时，工程团队还需要面对部署与运维的现实约束。模型上线后会出现数据分布漂移，原本在测试集上稳定的指标可能随时间缓慢劣化。建立线上监控、定期回流标注、按季度重训，是维持效果的常规手段，而这些工作量的预估常常在立项阶段被低估。",
+  "值得注意的是，成本结构也在发生变化。早期算力是主要开销，如今推理成本随着模型小型化和量化技术普及而快速下降，反而数据获取与合规审查的占比持续上升。对中小企业而言，采用通用模型加领域微调，通常比从零预训练更经济。",
+  "从安全与合规角度看，生成式模型的普及带来了内容溯源的新需求。如何在不侵犯隐私的前提下标识机器生成内容，已经成为平台治理的基础设施议题。技术手段如隐式水印与统计检测器各有适用边界，需要与管理规范配合使用。",
+  "在评测方法上，单纯的准确率已经不足以反映系统表现。面向真实场景的评测需要覆盖长尾分布、对抗样本与跨时段数据，同时报告置信区间而非单点数值。仅有平均值的结果容易掩盖模型在特定子群体上的显著劣化，这在风控与医疗场景中尤为危险。",
+  "人机协作是被反复验证的有效形态。完全自动化往往在边界情况下失效，而把模型输出作为初稿、由人类专家复核，可以在保证效率的同时控制风险。实践中的关键是设计好交互节奏：让模型承担高吞吐的重复判断，把不确定的样本路由给人工。",
+  "教育领域的落地显示出另一类特征。个性化学习系统能够根据作答记录动态调整题目难度，显著提升练习效率，但其效果高度依赖学生画像的完整性。数据稀疏的新用户容易收到不恰当推荐，因此冷启动策略需要结合课程知识体系而非仅靠行为数据。",
+  "医疗影像是深度学习最早取得突破的方向之一。系统在肺结节筛查、糖尿病视网膜病变分级等任务上已达到专科医生水平，但临床部署仍面临责任界定与流程衔接的问题。模型给出的是概率，而临床决策需要的是可执行的处置建议，两者之间需要严谨的转化。",
+  "金融风控强调可解释与可审计。监管要求对拒绝授信给出明确理由，这与复杂模型的黑箱特性存在张力。行业普遍做法是采用可解释模型做主决策，用复杂模型做辅助特征，或借助事后归因方法生成可读解释，并对解释本身的稳定性进行验证。",
+  "法律文书处理则更看重召回而非精确。合同审查场景中漏检条款的代价远高于误报，因此阈值设置需要整体偏向保守，并配合人工复核队列。同时术语与表述的地域差异会显著影响模型表现，跨地区部署前应做充分的本地化验证。",
+  "从组织视角看，能力建设比单点项目更重要。建立统一的特征平台、模型 registry 与评测流水线，可以让后续每个项目的边际成本持续下降。相反，若每个项目各自搭建工具链，短期看似灵活，长期会形成难以维护的重复建设。",
+  "综合上述讨论，人工智能的价值并不主要来自模型本身的先进程度，而来自它与数据、流程、人员之间的耦合质量。技术选型需要服务于业务目标，效果评估需要覆盖全生命周期，风险治理需要前置到设计阶段。只有在这些条件同时具备时，能力才会稳定转化为产出。",
+  "展望未来，人工智能的发展将呈现三个趋势：其一是多模态融合，文本、图像、语音的统一建模将成为主流；其二是模型小型化，使能力可以在端侧设备上运行；其三是与行业知识的深度结合，通用模型配合领域微调将是落地的主要形态。综上所述，人工智能技术的应用前景十分广阔，但也需要配套治理机制以保障其安全可控。"
+].join('\n\n');
+
+/* ── 切分 ───────────────────────────────────────────── */
+function splitTexts(raw, how, size){
+  const t = String(raw || '').replace(/\r/g, '');
+  if(!t.trim()) return [];
+  if(how === 'line')
+    return t.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(how === 'para')
+    return t.split(/\n\s*\n/).map(s=>s.replace(/\n+/g,' ').trim()).filter(Boolean);
+  if(how === 'whole'){
+    const s = t.replace(/\n+/g, ' ').trim();
+    return s ? [s] : [];
+  }
+  const flat = t.replace(/\n+/g, ' ').trim();
+  if(how === 'chunk'){
+    const out = [];
+    for(let i=0; i<flat.length; i+=size) out.push(flat.slice(i, i+size));
+    return out.filter(s=>s.trim());
+  }
+  // sent：按句切，累积到 size 字成一块
+  const sents = flat.match(/[^。！？；!?;]+[。！？；!?;]*/g) || [flat];
+  const out = []; let buf = '';
+  for(const s of sents){
+    buf += s;
+    if(buf.length >= size){ out.push(buf.trim()); buf = ''; }
+  }
+  if(buf.trim().length >= 20) out.push(buf.trim());
+  else if(buf.trim() && out.length) out[out.length-1] += buf.trim();
+  else if(buf.trim()) out.push(buf.trim());
+  return out;
+}
+
+function currentTexts(){
+  return splitTexts($('#texts').value, $('#split').value,
+                    Math.max(50, parseInt($('#size').value, 10) || 300));
+}
+
+function setCount(){
+  const list = currentTexts();
+  const n = list.length;
+  const chars = list.reduce((a,s)=>a+s.length, 0);
+  const how = $('#split').value;
+  const feat = curFeat();
+  const MIN_N = minFor(feat), REC_N = recFor(feat);
+  let tip, cls = '';
+  if(n === 0){
+    tip = `0 条 · ${feat} 检测至少需要 ${MIN_N} 条（建议 ≥ ${REC_N} 条）`;
+  }else if(n < MIN_N){
+    cls = 'bad';
+    tip = `${n} 条 · 不足 ${MIN_N} 条（${feat} 门槛），还差 ${MIN_N - n} 条，暂不可检测`
+        + (how === 'line' ? '（请补充更多文本行）' : '（请减小块大小以增加块数）')
+        + (feat === '15D' ? '；或改用 20 条门槛的字符 2-4gram' : '');
+  }else if(n < REC_N){
+    cls = 'warn';
+    tip = `${n} 条 · 共 ${chars} 字 · 可以检测；${feat} 达 ${REC_N} 条后诊断量更稳`;
+  }else{
+    cls = 'ok';
+    tip = `${n} 条 · 共 ${chars} 字`;
+  }
+  $('#count').textContent = tip;
+  $('#count').className = 'hint' + (cls ? ' ' + cls : '');
+  $('#run').disabled = n < MIN_N;
+  $('#run').title = n < MIN_N ? `${feat} 至少需要 ${MIN_N} 条文本` : '';
+}
+
+$('#texts').addEventListener('input', setCount);
+$('#split').addEventListener('change', ()=>{
+  const how = $('#split').value;
+  $('#size').disabled = !(how === 'sent' || how === 'chunk');
+  setCount();
+});
+$('#size').addEventListener('input', setCount);
+$('#feat').addEventListener('change', setCount);   // 换特征集即换门槛
+$('#demo').addEventListener('click', ()=>{
+  $('#texts').value = DEMO.join('\n'); $('#split').value = 'line'; setCount();
+});
+$('#demo').addEventListener('dblclick', ()=>{
+  // 长文示例：按句成块 + 60 字块，切出 24 块，直接满足门槛
+  $('#texts').value = DEMO_LONG;
+  $('#split').value = 'sent';
+  $('#size').value = 60; $('#size').disabled = false;
+  setCount();
+});
+$('#clear').addEventListener('click', ()=>{
+  $('#texts').value = ''; setCount();
+  SRCFILES = []; LAST = null;
+  $('#filenames').textContent = '未选择文件（支持 txt / md / csv / jsonl，可多选）';
+  ['#doccard','#summary','#candcard','#itemcard','#exportcard'].forEach(s=>$(s).hidden=true);
+  $('#err').innerHTML = '';
+});
+
+let MODELS = [];
+
+async function loadModels(){
+  try{
+    const r = await fetch(api('api/models'));
+    const m = await r.json();
+    const keys = Object.keys(m || {});
+    if(!keys.length) return;
+    // 字符级 TF-IDF 在整篇长文场景明显更稳，排到默认位
+    MODELS = keys.slice().sort((a,b)=>(a==='char_2_4'?0:1)-(b==='char_2_4'?0:1));
+    GATE = Object.fromEntries(keys.map(
+      k => [k, {min_n: (m[k]||{}).min_n || 50, rec_n: (m[k]||{}).rec_n || 100}]));
+    $('#feat').innerHTML = MODELS.map(k=>{
+      const lab = {'15D':'15D 手工特征', char_2_4:'字符 2-4gram TF-IDF',
+                   roberta_frozen:'RoBERTa 冻结表征'}[k] || k;
+      const g = gateOf(k);
+      return `<option value="${k}">${lab}（≥${g.min_n} 条）</option>`;
+    }).join('');
+    setCount();   // 门槛随选项变化，装载完立即按当前特征集刷新
+  }catch(e){ console.warn('模型清单加载失败', e); }
+}
+
+$('#run').addEventListener('click', async ()=>{
+  $('#err').innerHTML = '';
+  ['#doccard','#summary','#candcard','#itemcard'].forEach(s=>$(s).hidden=true);
+  const texts = currentTexts();
+  const feat = curFeat();
+  const MIN_N = minFor(feat), REC_N = recFor(feat);
+  if(texts.length < MIN_N){
+    $('#err').innerHTML = '<div class="err">当前只有 ' + texts.length
+      + ' 条，未达到 ' + feat + ' 的 ' + MIN_N + ' 条门槛，已阻止检测。'
+      + ($('#split').value === 'line'
+         ? '请补充到 ' + MIN_N + ' 条以上（建议 ≥ ' + REC_N + ' 条）。'
+         : '请把块大小调小以增加块数，或换用更长的文章。')
+      + (feat === '15D'
+         ? ' 15 维特征类间距较小，小批次上类条件对齐的期望增益为负，'
+           + '放宽门槛只会得到比不校正更差的结果；文本不足请改用字符 2-4gram（20 条）。'
+         : '')
+      + '</div>';
+    setCount();
+    return;
+  }
+  if(texts.length > 2000){
+    $('#err').innerHTML = '<div class="err">切出 ' + texts.length
+      + ' 条，超过 2000 条上限，请增大块大小。</div>';
+    return;
+  }
+  // 达到门槛但未到推荐规模：诊断量的可靠性打折，明确说明
+  if(texts.length < REC_N){
+    $('#err').innerHTML = '<div class="err warn">已通过 ' + MIN_N
+      + ' 条门槛，检测到 ' + texts.length + ' 条：判定可用，但 Ξ 与 Δ_T 在 '
+      + feat + ' 少于 ' + REC_N + ' 条时波动较大，诊断量仅供参考。</div>';
+  }
+  $('#run').disabled = true; $('#run').textContent = '运行中…';
+  try{
+    const r = await fetch(api('api/detect'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({texts, feat:$('#feat').value,
+                            mode:$('#mode').value, item_limit:500})
+    });
+    const ct = r.headers.get('content-type') || '';
+    if(!ct.includes('application/json'))
+      throw new Error('接口返回了非 JSON（HTTP ' + r.status + '）：'
+                      + (await r.text()).slice(0, 120));
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || JSON.stringify(d));
+    // 报告导出需要原文与参数的完整快照，不能只留渲染用的 items
+    LAST = {d, texts, feat: $('#feat').value, mode: $('#mode').value,
+            how: $('#split').value, size: $('#size').value};
+    $('#exportcard').hidden = false;
+    $('#dlhint').textContent = '';
+    render(d, texts.length);
+  }catch(e){
+    $('#err').innerHTML = '<div class="err">检测失败：'
+      + escapeHtml(String(e.message || e)) + '\n接口地址：' + api('api/detect') + '</div>';
+  }finally{
+    $('#run').disabled = false; $('#run').textContent = '运行检测';
+  }
+});
+
+function kpi(k,v){ return `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
+
+function render(d, nIn){
+  const dg = d.diag || {};
+  $('#kpis').innerHTML = [
+    kpi('批次规模', d.n),
+    kpi('选中变体', d.chosen),
+    kpi('预测 macro-F1', d.predicted_f1 ?? '—'),
+    kpi('AI 占比', (d.ai_rate*100).toFixed(1) + '%'),
+    kpi('Ξ<sub>ai</sub>', dg.Xi_ai ?? '—'),
+    kpi('Ξ<sub>hu</sub>', dg.Xi_hu ?? '—'),
+    kpi('Δ<sub>T</sub>', dg.Delta_T ?? '—'),
+    kpi('源域 Δ', dg.Delta ?? '—')
+  ].join('');
+  $('#summary').hidden = false;
+  const warn = d.warn ? `<div class="err" style="margin-bottom:10px">${d.warn}</div>` : '';
+  $('#diagline').innerHTML = warn +
+    `分档 |Ξ<sub>ai</sub>| ${dg.band ?? '—'}，该档实测平均校正增益 ${dg.expected_gain ?? '—'}；`
+    + `源域预测 F1 ${dg.pred_f1_source ?? '—'} → 目标域 ${dg.pred_f1 ?? '—'}；`
+    + `信噪比 Δ<sub>T</sub>/σ<sub>T</sub> = ${dg.SNR_T ?? '—'}；`
+    + `恒等式 Δ−Ξ<sub>ai</sub>+Ξ<sub>hu</sub>=Δ<sub>T</sub> 残差 ${dg.identity_resid ?? '—'}。`
+    + ` 耗时 ${d.elapsed_ms} ms。`;
+
+  const rows = Object.entries(d.candidates||{}).sort((a,b)=>(b[1]??-1)-(a[1]??-1));
+  $('#cands').innerHTML = rows.map(([k,v])=>{
+    const w = Math.max(0, Math.min(1, (v-0.5)/0.5)) * 100;
+    return `<tr><td>${k}${k===d.chosen?' ✅':''}</td><td class="num">${v ?? '—'}</td>
+      <td><div class="bar"><i style="width:${w}%"></i></div></td></tr>`;
+  }).join('');
+  $('#candcard').hidden = false;
+
+  const items = d.items || [];
+  $('#items').innerHTML = items.map(it=>
+    `<tr><td class="num">${it.index}</td><td class="num">${Number(it.p_ai).toFixed(3)}</td>
+     <td><div class="bar"><i style="width:${(Number(it.p_ai)*100).toFixed(0)}%"></i></div></td>
+     <td><span class="tag ${it.label==='AI'?'ai':'hu'}">${it.label}</span></td>
+     <td>${escapeHtml(it.text)}</td></tr>`).join('');
+  $('#itemcard').hidden = false;
+
+  // 长文模式：把块级判定汇总成整篇结论
+  if($('#split').value !== 'line' && items.length){
+    const ai = items.filter(it=>it.label === 'AI').length;
+    const shown = Math.min(items.length, d.items.length);
+    const rate = ai / shown;
+    const mean = items.reduce((a,it)=>a + Number(it.p_ai), 0) / shown;
+    const isAI = rate > 0.5;
+    $('#verdict').innerHTML =
+      `<div class="verdict ${isAI?'ai':'hu'}">整篇判定：${isAI?'AI 生成':'人类撰写'}`
+      + `（AI 块 ${ai}/${shown}）</div>`;
+    $('#dockpis').innerHTML = [
+      kpi('AI 块占比', (rate*100).toFixed(1) + '%'),
+      kpi('平均 P(AI)', mean.toFixed(3)),
+      kpi('切分块数', `${shown} 块`),
+      kpi('混合度', (Math.min(rate, 1-rate)*2*100).toFixed(0) + '%')
+    ].join('');
+    $('#doccard').hidden = false;
+    compare($('#feat').value, $('#mode').value, isAI);
+    const REC_N = recFor(curFeat());
+    $('#dochint').innerHTML = shown < REC_N
+      ? '<b>块数偏少</b>：整篇结论在 ' + shown + ' 块上估计，判定可用，'
+        + '但诊断量稳定性有限；减小块大小使块数达到 ' + REC_N + ' 以上更可靠。'
+      : '混合度接近 100% 说明人机段落混杂（可能为改写/局部生成），'
+        + '接近 0% 说明整篇风格一致。';
+  }
+}
+
+// 整篇结论只有一次机会，用另一个特征集再跑一遍做交叉验证；
+// 两个特征集结论不一致时明确要求人工复核，而不是给一个看似确定的答案
+async function compare(feat, mode, mainIsAI){
+  const other = MODELS.find(k => k !== feat);
+  if(!other){ $('#compare').textContent = ''; return; }
+  // 对照方可能不达标（15D 门槛 50 条），此时不做对照并说明原因，
+  // 而不是拿一个在该规模上已知会失效的结果去"验证"主结论。
+  const n = currentTexts().length;
+  const need = minFor(other);
+  if(n < need){
+    $('#compare').innerHTML = '<span class="skip">未做交叉对照：'
+      + other + ' 需要 ≥' + need + ' 条，当前 ' + n
+      + ' 条。该规模下其类条件对齐期望增益为负，对照不具备判别力。</span>';
+    return;
+  }
+  $('#compare').textContent = '正在用另一特征集做交叉对照…';
+  try{
+    const r = await fetch(api('api/detect'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({texts: currentTexts(), feat: other, mode, item_limit:500})
+    });
+    const d = await r.json();
+    if(!r.ok){
+      $('#compare').innerHTML = '<span class="skip">未做交叉对照：'
+        + ((d.detail || '') + '').slice(0, 120) + '</span>';
+      return;
+    }
+    const items = d.items || [];
+    if(!items.length){ $('#compare').textContent = ''; return; }
+    const ai = items.filter(it=>it.label==='AI').length;
+    const rate = ai / items.length;
+    const lab = {char_2_4:'字符 2-4gram TF-IDF', '15D':'15D 手工特征',
+                 roberta_frozen:'RoBERTa 冻结表征'}[other] || other;
+    const same = (rate > 0.5) === mainIsAI;
+    $('#compare').innerHTML =
+      `交叉对照（${lab}）：AI 块 ${ai}/${items.length}（${(rate*100).toFixed(1)}%），`
+      + `整篇判为 <b>${rate>0.5?'AI 生成':'人类撰写'}</b>。`
+      + (same ? '　✅ 与主特征集一致。'
+              : '　⚠️ <b>与主特征集结论不一致</b>，本批次可能缺少两类对照'
+                + '（整篇单一来源时常见），请以人工复核为准。');
+  }catch(e){
+    $('#compare').textContent = '交叉对照失败：' + (e.message || e);
+  }
+}
+
+const SPLIT_LABEL = {line:'按行（一行一条）', para:'按段落（空行分段）',
+                     sent:'按句成块', chunk:'按字数切块', whole:'整篇一条'};
+const FEAT_LABEL = {char_2_4:'字符 2-4gram TF-IDF', '15D':'15D 手工特征',
+                    roberta_frozen:'RoBERTa 冻结表征'};
+
+function mdCell(s){
+  // 表格里出现管道符、换行会破坏 Markdown 结构
+  return String(s).replace(/\|/g, '\\|').replace(/\r?\n/g, ' ').trim();
+}
+function csvCell(s){
+  const v = String(s).replace(/"/g, '""');
+  return `"${v}"`;
+}
+function stamp(){
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+}
+function saveBlob(name, text, mime){
+  const url = URL.createObjectURL(new Blob([text], {type: mime + ';charset=utf-8'}));
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// 页面渲染最多取 500 条，导出报告要覆盖全部段落：不足时按原参数重取一次
+async function fullItems(){
+  if(!LAST) return [];
+  const items = LAST.d.items || [];
+  if(items.length >= LAST.texts.length) return items;
+  $('#dlhint').textContent = `正在重取全部 ${LAST.texts.length} 条结果…`;
+  const r = await fetch(api('api/detect'), {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({texts: LAST.texts, feat: LAST.feat,
+                          mode: LAST.mode, item_limit: 0})
+  });
+  const d = await r.json();
+  if(!r.ok) throw new Error(d.detail || JSON.stringify(d));
+  LAST.d.items = d.items;          // 缓存，避免重复导出时反复重算
+  return d.items || [];
+}
+
+function buildReport(items){
+  const {d, texts, feat, mode, how, size} = LAST;
+  const dg = d.diag || {};
+  const by = new Map(items.map(it => [it.index, it]));
+  const rows = texts.map((t, i) => {
+    const it = by.get(i) || {p_ai: NaN, label: '—'};
+    return {i, text: t, p_ai: Number(it.p_ai), label: it.label,
+            abs: Math.abs(Number(it.p_ai) - 0.5)};
+  });
+  const ai = rows.filter(r => r.label === 'AI').length;
+  const rate = rows.length ? ai / rows.length : 0;
+  const mean = rows.length ? rows.reduce((a,r)=>a + r.p_ai, 0) / rows.length : NaN;
+  const chars = rows.reduce((a,r)=>a + r.text.length, 0);
+  const L = [];
+  L.push('# TTAScope 中文 AI 生成文本检测报告', '');
+  L.push('- 生成时间：' + new Date().toLocaleString('zh-CN'));
+  L.push('- 特征集：' + (FEAT_LABEL[feat] || feat) + `（${feat}）`);
+  L.push('- 校正方式：`' + mode + '`　选中变体：`' + d.chosen + '`');
+  L.push('- 批次规模：' + rows.length + ' 条 / 共 ' + chars + ' 字');
+  L.push('- 切分方式：' + (SPLIT_LABEL[how] || how) +
+         (how === 'sent' || how === 'chunk' ? `，块大小 ${size} 字` : ''));
+  if(SRCFILES.length){
+    L.push('- 来源文件：' + SRCFILES.map(
+      m => `${m.name}（${(m.bytes/1024).toFixed(1)} KB · ${m.enc} · ${m.lines} 行）`).join('；'));
+  }else{
+    L.push('- 来源文件：无（页面粘贴）');
+  }
+  L.push('');
+  L.push('## 一、整篇/批次结论', '');
+  L.push('- **AI 判定条数**：' + ai + ' / ' + rows.length +
+         '（AI 占比 ' + (rate*100).toFixed(1) + '%）');
+  L.push('- **平均 P(AI)**：' + (isNaN(mean) ? '—' : mean.toFixed(3)));
+  L.push('- **整体倾向**：' + (rate > 0.5 ? 'AI 生成' : '人类撰写'));
+  L.push('- **混合度**：' + (Math.min(rate, 1-rate)*2*100).toFixed(0) +
+         '%（越高说明人机段落混杂，越低说明整篇风格一致）');
+  // 只有交叉对照真的跑出结论时才写进报告：批量（按行）模式不做整篇汇总，
+  // #compare 里还是占位文案，直接照搬会把"正在…"印进报告。
+  const cmp = $('#doccard').hidden ? '' : ($('#compare').textContent || '').trim();
+  if(cmp && !/正在|失败/.test(cmp))
+    L.push('- **交叉对照**：' + mdCell(cmp.replace(/\s+/g, ' ')));
+  if(d.warn) L.push('', '> ⚠️ ' + d.warn);
+  L.push('');
+  L.push('## 二、漂移诊断', '');
+  L.push('| 指标 | 数值 |', '| --- | --- |');
+  const dia = [['Ξ_ai（源→目标 AI 类漂移在判别方向的投影）', dg.Xi_ai],
+               ['Ξ_hu（人类类漂移）', dg.Xi_hu],
+               ['Δ_T（目标域实测类间间隔）', dg.Delta_T],
+               ['源域 Δ', dg.Delta],
+               ['信噪比 Δ_T/σ_T', dg.SNR_T],
+               ['推论 1 预测 macro-F1', dg.pred_f1],
+               ['源域预测 macro-F1', dg.pred_f1_source],
+               ['该分档实测平均校正增益', dg.expected_gain],
+               ['恒等式残差 Δ−Ξ_ai+Ξ_hu−Δ_T', dg.identity_resid]];
+  for(const [k, v] of dia) L.push(`| ${k} | ${v ?? '—'} |`);
+  L.push('', '分档：' + (dg.band ?? '—') + '　耗时：' + (d.elapsed_ms ?? '—') + ' ms');
+  L.push('');
+  L.push('## 三、候选校正变体（无标签准则打分，越高越好）', '');
+  L.push('| 变体 | 预测 macro-F1 | 是否选中 |', '| --- | --- | --- |');
+  for(const [k, v] of Object.entries(d.candidates || {})
+                            .sort((a,b)=>(b[1]??-1)-(a[1]??-1)))
+    L.push(`| ${k} | ${v ?? '—'} | ${k === d.chosen ? '✅' : ''} |`);
+  L.push('');
+  L.push('## 四、逐段分析（按原文顺序）', '');
+  L.push('| # | 字数 | P(AI) | 距阈值 | 判定 | 摘要 |', '| --- | --- | --- | --- | --- | --- |');
+  for(const r of rows){
+    const sum = r.text.length > 70 ? r.text.slice(0, 70) + '…' : r.text;
+    L.push(`| ${r.i+1} | ${r.text.length} | ${isNaN(r.p_ai)?'—':r.p_ai.toFixed(3)} `
+      + `| ${isNaN(r.p_ai)?'—':r.abs.toFixed(3)} | ${r.label} | ${mdCell(sum)} |`);
+  }
+  L.push('', `> 「距阈值」=|P(AI)−0.5|，越小说明该段落越接近判定边界、结论越不可靠。`, '');
+  // P(AI) 最高的若干段最能支撑整篇结论，单独列出便于人工复核
+  const top = rows.slice().sort((a,b)=>b.abs-a.abs).slice(0, Math.min(10, rows.length));
+  L.push('### 高置信段落（离判定边界最远，最可靠）', '');
+  for(const r of top)
+    L.push(`- 第 ${r.i+1} 段：P(AI)=${r.p_ai.toFixed(3)}，判为 **${r.label}**`);
+  L.push('');
+  L.push('## 五、逐段原文', '');
+  for(const r of rows){
+    L.push(`### 第 ${r.i+1} 段　P(AI)=${isNaN(r.p_ai)?'—':r.p_ai.toFixed(3)}　${r.label}`,
+           '', r.text, '');
+  }
+  L.push('## 六、适用边界', '');
+  L.push('1. 方法作用于**一批**文本而非单条，P(AI) 是批次校正后的相对位置，'
+       + '不可脱离批次单独解读某一段。');
+  L.push('2. 批次类先验严重失衡（单一来源占比过高）时结论可靠性下降；'
+       + '本报告 AI 占比可作为先验失衡的参考。');
+  L.push('3. 上述结论是在"衰减尚未饱和"的目标上得出的，'
+       + '在多数变体已接近 1.0 的近天花板场景不宜外推。');
+  L.push('4. 本报告仅供内容治理与研究参考，不构成对文本来源的确定性认定。');
+  L.push('');
+  return L.join('\n');
+}
+
+function buildCsv(items){
+  const {texts} = LAST;
+  const by = new Map(items.map(it => [it.index, it]));
+  const head = ['序号', '字数', 'P(AI)', '判定', '距阈值', '原文'];
+  const rows = texts.map((t, i)=>{
+    const it = by.get(i) || {};
+    const p = Number(it.p_ai);
+    return [i+1, t.length, isNaN(p) ? '' : p.toFixed(4), it.label || '',
+            isNaN(p) ? '' : Math.abs(p-0.5).toFixed(4), t].map(csvCell).join(',');
+  });
+  return '\uFEFF' + [head.map(csvCell).join(',')].concat(rows).join('\r\n');
+}
+
+async function exportReport(kind){
+  const btn = kind === 'md' ? '#dlmd' : '#dlcsv';
+  $(btn).disabled = true;
+  $('#dlhint').textContent = '正在生成…';
+  try{
+    const items = await fullItems();
+    const name = `ttascope-report-${stamp()}.` + (kind === 'md' ? 'md' : 'csv');
+    if(kind === 'md') saveBlob(name, buildReport(items), 'text/markdown');
+    else saveBlob(name, buildCsv(items), 'text/csv');
+    $('#dlhint').textContent = '已导出 ' + name + '（' + LAST.texts.length + ' 段）';
+  }catch(e){
+    $('#dlhint').textContent = '导出失败：' + (e.message || e);
+  }finally{
+    $(btn).disabled = false;
+  }
+}
+
+$('#dlmd').addEventListener('click', ()=>exportReport('md'));
+$('#dlcsv').addEventListener('click', ()=>exportReport('csv'));
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+loadModels(); setCount();
+</script>
+</body>
+</html>

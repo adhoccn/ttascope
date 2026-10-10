@@ -1,0 +1,16 @@
+[Unit]
+Description=TTAScope — 中文 AI 生成文本检测（判别漂移 + 无标签批校正）
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__APP_DIR__
+Environment=PYTHONUNBUFFERED=1
+Environment=TTASCOPE_MODELS=__APP_DIR__/models
+ExecStart=__APP_DIR__/.venv/bin/uvicorn app.server:app --host 127.0.0.1 --port __PORT__
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
