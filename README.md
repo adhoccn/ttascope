@@ -1,5 +1,8 @@
 # TTAScope
 
+> **Batch AI-generated-text detection with drift diagnostics — works on text from unknown
+> LLMs, no target labels and no model access.**
+
 A deployable service for batch AI-generated-text (AIGT) detection, built on the method of the
 companion paper *"面向未知大语言模型的中文 AI 生成文本检测：判别漂移的可预测性与无标签批校正"*.
 Author identity is withheld in this repository for double-blind review.
@@ -7,6 +10,9 @@ Author identity is withheld in this repository for double-blind review.
 Given a **batch** of texts from an unknown LLM, TTAScope returns a per-item AI probability,
 a batch-level verdict, and a drift diagnostic — without any label from the target domain and
 without access to the target model.
+
+**Live demo:** <http://106.54.192.87:8501/tta/> — paste a batch of Chinese text (or upload a
+file) to see per-item verdicts and the drift diagnostic. No data is retained server-side.
 
 ## What it reports
 
