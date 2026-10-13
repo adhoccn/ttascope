@@ -1,7 +1,7 @@
 /** 无头 Edge 实测页面交互（需 puppeteer-core）。
  *
  *   NODE_PATH=<workspace>/node_modules node tests/browser_check.js \
- *       http://localhost:8501/tta/
+ *       http://106.54.192.87:8501/tta/
  *
  * 覆盖：空输入禁用 → 不足门槛禁用并提示还差几条 → 示例达标后可检测并渲染
  * → 长文按句切块后整篇结论出现。任一环节异常即退出码 1。
@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const URL = process.argv[2] || 'http://localhost:8501/tta/';
+const URL = process.argv[2] || 'http://106.54.192.87:8501/tta/';
 const dlDir = path.join(os.tmpdir(), 'ttascope-dl-' + Date.now());
 let fail = 0;
 

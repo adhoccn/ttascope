@@ -11,9 +11,13 @@
 设计要点（与论文一致）：
   * 规范管线：SimpleImputer(median) + StandardScaler 只在训练集拟合，
     然后用于测试批。缺了这一步，15 维特征因量纲差异会让 Δ 与 Ξ 失真。
-  * 单步优先：类条件对齐迭代多次会退化，候选族里同时放了单步与三步，
+  * 单步优先：类条件对齐迭代多次会退化，候选族里同时放了不同 λ 与选通比例，
     由无标签准则挑选。
-  * 校正顺序：先 bnc 锁住批中心，再做类条件位移；每步扣掉位移的批均值。
+  * 校正口径与论文统一实现一致（tta.tta_final）：每轮把批混合中心钉回
+    ½(mu0_tr + mu1_tr)，不做整批对齐 bnc 预步。
+  * 类先验前置拒绝：r_AI（未校正批次判为 AI 的比例）> 0.64 时拒绝校正
+    （§5.4 / 表 S11）。类平衡告警本身不可靠——观测量满足仿射律
+    r_AI = FPR + π(TPR−FPR)、斜率恒小于 1，对 0.5 的偏离被系统性压缩。
 """
 import numpy as np
 
@@ -39,6 +43,8 @@ MIN_N = {'15D': 50, 'char_2_4': 20, 'roberta_frozen': 50}
 REC_N = {'15D': 100, 'char_2_4': 50, 'roberta_frozen': 100}
 DEFAULT_MIN_N = 50
 DEFAULT_REC_N = 100
+
+# 类先验的前置拒绝阈值：REJECT_R_AI，见 diagnostics.REJECT_R_AI（§5.4 / 表 S11）。
 
 
 def min_n(feat):
@@ -95,20 +101,21 @@ class TTADetector:
     def _candidates(self, B):
         """产出 {变体名: 校正后的特征矩阵}。
 
-        候选族与论文表 10 的无标签选参实验一致：批对齐（bn / bnc）+
-        类条件对齐（em，λ∈{0.5,1}）+ 高置信选通（conf，λ∈{0.5,1} ×
-        keep∈{0.3,0.5,0.7}），共 11 个变体。选参准则在这些变体上取
-        预测 macro-F1 最高者。
+        候选族与论文最终统一族一致，共 10 个变体：不校正（none）+ 批标准化
+        （bn）+ 类条件对齐（em，λ∈{0.5,1}）+ 高置信选通（conf，λ∈{0.5,1} ×
+        keep∈{0.3,0.5,0.7}）。选参准则在这些变体上取预测 macro-F1 最高者。
+
+        整批对齐 bnc 已移出候选族：论文表 S5 显示它损害排序质量（AUC），
+        而 GMM 选参准则在若干配置上会选中它并导致结果为负（§5.3）。
         """
         out = {'none': B,
-               'bn': tta.bn(B, self.mu_tr, self.sd_tr),
-               'bnc': tta.bnc(B, self.mu_tr)}
+               'bn': tta.bn(B, self.mu_tr, self.sd_tr)}
         for lam in self.lams:
-            out['em_l%.1f' % lam] = tta.align(
+            out['em_l%.1f' % lam] = tta.tta_final(
                 B, self.clf, self.mu0_tr, self.mu1_tr,
                 iters=self.iters, lam=lam, mode='em')
             for k in self.keeps:
-                out['conf_l%.1f_k%.2f' % (lam, k)] = tta.align(
+                out['conf_l%.1f_k%.2f' % (lam, k)] = tta.tta_final(
                     B, self.clf, self.mu0_tr, self.mu1_tr,
                     iters=self.iters, lam=lam, mode='conf', keep=k)
         return out
@@ -130,6 +137,7 @@ class TTADetector:
                 '（门槛 20 条）。' % (self.feat_name, need_min))
 
         B = self.transform(texts)
+        gamma0 = self.clf.predict_proba(B)[:, 1]      # 未校正批次上的后验
         cands = self._candidates(B)
         scored = {}
         for name, Bc in cands.items():
@@ -147,14 +155,37 @@ class TTADetector:
                                % (mode, ', '.join(sorted(scored))))
             pick = mode
 
+        # 前置拒绝规则（§5.4）：整批同源时加权矩估计失效，校正会主动造成损失。
+        # r_AI 只用未校正后验，不依赖目标域标签；auto 模式下直接退回 none，
+        # 显式指定变体时保留用户选择（那是有意的调试/复现用途）并给出告警。
+        gate = diagnostics.prior_reject(gamma0)
+        r_ai = gate['r_ai']
+        gate['explicit'] = (mode != 'auto')
+        gate['original_pick'] = pick
+        if gate['rejected'] and not gate['explicit'] and pick != 'none':
+            pick = 'none'
+            gate['applied'] = True
+
         Bc, z, pf = scored[pick]
         prob = self.clf.predict_proba(Bc)[:, 1]
-        gamma0 = self.clf.predict_proba(B)[:, 1]
         diag = diagnostics.estimate(self.X_src, self.y_src, B, gamma0)
 
         warn = None
         need = rec_n(self.feat_name)
-        if len(texts) < need:
+        if gate['rejected']:
+            # 三种状态必须分开说，否则「auto 本就选了 none」会被读成「拦了却没生效」
+            if gate['explicit']:
+                action = ('自动选参下会拒绝校正；当前为显式指定 %s，已按指定执行。'
+                          % mode)
+            elif gate['applied']:
+                action = ('已拒绝校正（原选中 %s），按不校正输出。'
+                          % gate['original_pick'])
+            else:
+                action = '自动选参本就选择不校正，与判据结论一致。'
+            warn = ('批次疑似整批同源：未校正批次上判为 AI 的比例 r_AI=%.2f 超过 '
+                    '阈值 %.2f。%s'
+                    % (r_ai, diagnostics.REJECT_R_AI, action))
+        elif len(texts) < need:
             warn = ('批次仅 %d 条：类条件均值由软标签估计，%s 特征少于 %d 条时 '
                     'Ξ 与 Δ_T 波动较大，判定结果仍可用，诊断量仅供参考。'
                     % (len(texts), self.feat_name, need))
@@ -170,6 +201,7 @@ class TTADetector:
             'predicted_f1': None if np.isnan(pf) else round(float(pf), 4),
             'ai_rate': round(float((prob > 0.5).mean()), 4),
             'mean_prob': round(float(prob.mean()), 4),
+            'prior_gate': gate,
             'diag': diag,
         }
         if with_items:

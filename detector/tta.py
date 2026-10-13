@@ -1,14 +1,18 @@
 """测试时自适应：从整批对齐到类条件对齐的校正族，以及无标签的选参准则。
 
-统一族（E28/E29）。设批特征矩阵 B、源域类条件均值 mu0_tr / mu1_tr：
+统一族（与论文最终实现一致，见 exp/X5_unified_impl.py）。设批特征矩阵 B、
+源域类条件均值 mu0_tr / mu1_tr、批中心 centre_tr = ½(mu0_tr + mu1_tr)：
 
-    bnc    B + (mu_tr - mean(B))                     批中心对齐，理论残留 1/2
-    em     软后验 γ，位移 a·(γ-π) 施加于全样本      类条件对齐
-    trim   均值只由 top-keep 置信样本估计，位移仍施加全样本
-    conf   均值与位移都只作用于 top-keep 置信样本
+    bn     (B - mean(B)) / sd(B) · sd_tr + mu_tr     批 z-score 后仿射回源域
+    em     软后验 γ，位移 a·(γ-π) 施加于全样本       类条件对齐
+    conf   均值用全样本软后验估计，位移只作用于 top-keep 置信样本
 
-其中 a = dmu_tr - dmu_te，dmu 是两类均值之差；每步都减去位移的批均值以锁住
-批中心。λ 在 (0,1) 内给出批对齐与类条件对齐的连续插值。
+其中 a = dmu_tr - dmu_te，dmu 是两类均值之差；**每一轮迭代后**都把批混合
+中心钉回 centre_tr（Bc += centre_tr - mean(Bc)），而不是像早期实现那样只在
+开头做一次 bnc 预步。
+
+整批对齐 bnc 已移出候选族：论文表 S5 显示它会损害排序质量（AUC），无标签
+选参准则在若干配置上会选中它并导致结果为负（§5.3）。
 
 选参（E30）：候选变体各自产出一批分数，用一维两分量 GMM 在**无标签**的
 测试分数上解析预测 macro-F1，取预测值最高的变体。排序本身不被校正改变，
@@ -38,13 +42,56 @@ def bn(B, mu_tr, sd_tr):
     return (B - mu) / sd * sd_tr + mu_tr
 
 
+def tta_final(B, clf, mu0_tr, mu1_tr, iters=3, lam=1.0, keep=1.0, mode='em'):
+    """统一实现的类条件对齐（= exp/X5_unified_impl.tta_final，论文口径）。
+
+    与旧 align 的三点差异：
+      1. 不做开头的 bnc 预步；
+      2. 每轮迭代后把批混合中心钉回 ½(mu0_tr + mu1_tr)；
+      3. conf 下均值仍用全样本软后验估计，只有位移被 mask 选通。
+
+    mode: em / conf（trim 未进入候选族，保留分支仅为兼容旧调用）
+    keep: conf 下参与位移的高置信样本比例
+    """
+    dmu_tr = mu1_tr - mu0_tr
+    centre_tr = 0.5 * (mu0_tr + mu1_tr)
+    Bc = np.asarray(B, dtype=np.float64).copy()
+    for _ in range(iters):
+        g = clf.predict_proba(Bc)[:, 1]
+        if keep < 1.0:
+            conf = np.abs(g - PI)
+            k = max(int(round(keep * len(g))), 20)
+            idx = np.argsort(-conf)[:k]
+            mask = np.zeros(len(g), dtype=bool)
+            mask[idx] = True
+        else:
+            mask = np.ones(len(g), dtype=bool)
+        if mode == 'trim':
+            gw = np.where(mask, g, 0.0)
+            gw0 = np.where(mask, 1.0 - g, 0.0)
+            s1, s0 = gw.sum(), gw0.sum()
+        else:
+            s1, s0 = g.sum(), (1.0 - g).sum()
+            gw, gw0 = g, 1.0 - g
+        if s1 < 1e-6 or s0 < 1e-6:
+            break
+        mu1 = (Bc * gw[:, None]).sum(axis=0) / s1
+        mu0 = (Bc * gw0[:, None]).sum(axis=0) / s0
+        a = dmu_tr - (mu1 - mu0)
+        step = lam * a * (g - PI)[:, None]
+        if mode == 'conf':
+            step = step * mask[:, None]
+        Bc = Bc + step
+        Bc = Bc + (centre_tr - Bc.mean(axis=0))
+    return Bc
+
+
 def align(B, clf, mu0_tr, mu1_tr, iters=3, lam=1.0, mode='em', keep=0.5,
           oracle_g=None):
-    """类条件对齐的通用实现。
+    """早期实现（开头一次 bnc 预步 + 每步扣位移批均值）。
 
-    mode: em / trim / conf
-    keep: trim 与 conf 下参与估计（conf 下也参与位移）的高置信样本比例
-    oracle_g: 给定则 E 步用真值后验（仅用于标定上界）
+    仅保留供复现旧实验与 oracle 上界标定，**不进入在线候选族**。
+    在线口径一律走 tta_final。
     """
     Bc = bnc(B, 0.5 * (mu0_tr + mu1_tr))
     dmu_tr = mu1_tr - mu0_tr

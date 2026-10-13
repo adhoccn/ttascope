@@ -113,7 +113,6 @@
           <option value="auto">auto（无标签准则自动选参）</option>
           <option value="none">none（不校正）</option>
           <option value="bn">bn（批标准化对齐）</option>
-          <option value="bnc">bnc（批中心对齐）</option>
           <option value="em_l1.0">em_l1.0（类条件对齐，λ=1）</option>
           <option value="em_l0.5">em_l0.5（类条件对齐，λ=0.5）</option>
           <option value="conf_l1.0_k0.50">conf_l1.0_k0.50（高置信选通）</option>
@@ -529,6 +528,9 @@ $('#run').addEventListener('click', async ()=>{
       body: JSON.stringify({texts, feat:$('#feat').value,
                             mode:$('#mode').value, item_limit:500})
     });
+    if(r.status === 429)
+      throw new Error('请求过于频繁，已触发限流（检测接口 2 次/秒、突发 10；'
+                      + '单 IP 并发 6），请稍候几秒再试');
     const ct = r.headers.get('content-type') || '';
     if(!ct.includes('application/json'))
       throw new Error('接口返回了非 JSON（HTTP ' + r.status + '）：'
@@ -551,6 +553,16 @@ $('#run').addEventListener('click', async ()=>{
 
 function kpi(k,v){ return `<div class="kpi"><div class="k">${k}</div><div class="v">${v}</div></div>`; }
 
+// 类先验前置拒绝的三态说明：触发/未触发 × 是否真的退回 none × 是否显式指定。
+// 页面与报告共用同一份文案，避免两处各写一套导致说法不一致。
+function gateText(g){
+  if(!g) return '—';
+  if(!g.rejected) return '未触发';
+  if(g.explicit) return '触发；当前为显式指定变体，已按指定执行';
+  if(g.applied) return '触发，已拒绝校正（原选中 ' + g.original_pick + '）';
+  return '触发；自动选参本就选择不校正，结论一致';
+}
+
 function render(d, nIn){
   const dg = d.diag || {};
   $('#kpis').innerHTML = [
@@ -564,8 +576,21 @@ function render(d, nIn){
     kpi('源域 Δ', dg.Delta ?? '—')
   ].join('');
   $('#summary').hidden = false;
+  // 类先验前置拒绝（§5.4 / 表 S11）：被拦下时必须说清"为什么"与"这条规则不覆盖什么"
+  const g = d.prior_gate;
+  let ghtml = '';
+  if(g){
+    const cls = g.rejected ? 'err warn' : 'hint';
+    const sign = g.rejected ? '⚠️' : 'ℹ️';
+    ghtml = `<div class="${cls}" style="margin-bottom:10px">${sign} 类先验判据：`
+      + `未校正批次判为 AI 的比例 r<sub>AI</sub> = ${g.r_ai}，阈值 ${g.cut}——`
+      + gateText(g) + '。'
+      + ' 该规则只针对 π→1 的极端同源区（可用区误触发 0.00，危险区平均拦下 0.71）；'
+      + 'π≈0.7 的中度失衡无法由它捕捉，须按分特征结论处理（字符级尚有增益、15 维应停用）。'
+      + '</div>';
+  }
   const warn = d.warn ? `<div class="err" style="margin-bottom:10px">${d.warn}</div>` : '';
-  $('#diagline').innerHTML = warn +
+  $('#diagline').innerHTML = ghtml + warn +
     `分档 |Ξ<sub>ai</sub>| ${dg.band ?? '—'}，该档实测平均校正增益 ${dg.expected_gain ?? '—'}；`
     + `源域预测 F1 ${dg.pred_f1_source ?? '—'} → 目标域 ${dg.pred_f1 ?? '—'}；`
     + `信噪比 Δ<sub>T</sub>/σ<sub>T</sub> = ${dg.SNR_T ?? '—'}；`
@@ -638,8 +663,10 @@ async function compare(feat, mode, mainIsAI){
     });
     const d = await r.json();
     if(!r.ok){
-      $('#compare').innerHTML = '<span class="skip">未做交叉对照：'
-        + ((d.detail || '') + '').slice(0, 120) + '</span>';
+      $('#compare').innerHTML = r.status === 429
+        ? '<span class="skip">未做交叉对照：请求过于频繁，已触发限流，稍候可单独重试</span>'
+        : '<span class="skip">未做交叉对照：'
+          + ((d.detail || '') + '').slice(0, 120) + '</span>';
       return;
     }
     const items = d.items || [];
@@ -754,6 +781,8 @@ function buildReport(items){
                ['推论 1 预测 macro-F1', dg.pred_f1],
                ['源域预测 macro-F1', dg.pred_f1_source],
                ['该分档实测平均校正增益', dg.expected_gain],
+               ['r_AI（未校正批次判为 AI 的比例）', (d.prior_gate || {}).r_ai],
+               ['类先验前置拒绝（§5.4 / 表 S11）', gateText(d.prior_gate)],
                ['恒等式残差 Δ−Ξ_ai+Ξ_hu−Δ_T', dg.identity_resid]];
   for(const [k, v] of dia) L.push(`| ${k} | ${v ?? '—'} |`);
   L.push('', '分档：' + (dg.band ?? '—') + '　耗时：' + (d.elapsed_ms ?? '—') + ' ms');

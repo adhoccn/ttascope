@@ -1,6 +1,6 @@
 """线上冒烟测试：直接打公网地址，验证服务可用性与检测输出。
 
-    python tests/test_remote.py http://localhost:8501/tta
+    python tests/test_remote.py http://106.54.192.87:8501/tta
 
 用例为 24 条混合文本（12 条 AI 风格 / 12 条人类随笔），
 对 15D 与 char_2_4 两个特征集各跑一次 auto 模式，
@@ -71,13 +71,20 @@ def call(base, path, payload=None):
 
 
 def main():
-    base = sys.argv[1] if len(sys.argv) > 1 else 'http://localhost:8501/tta'
+    base = sys.argv[1] if len(sys.argv) > 1 else 'http://106.54.192.87:8501/tta'
     health, _ = call(base, '/health')
     print('health:', health)
     assert health['status'] == 'ok' and health['models'], '服务未就绪'
 
+    meta, _ = call(base, '/api/models')      # 条数门槛由服务端下发
+
     ok = True
     for feat in health['models']:
+        need = int(meta.get(feat, {}).get('min_n', 0) or 0)
+        if len(TEXTS) < need:
+            # 用例只有 24 条，低于该特征集的门槛，服务端会 400，跳过而非误报失败
+            print('\n[%s] 跳过：用例 24 条 < 门槛 %d 条' % (feat, need))
+            continue
         res, ms = call(base, '/api/detect',
                        {'texts': TEXTS, 'feat': feat, 'mode': 'auto'})
         items = res.get('items') or []

@@ -1,92 +1,234 @@
-# TTAScope
+# TTAScope · 中文 AI 生成文本检测
 
-> **Batch AI-generated-text detection with drift diagnostics — works on text from unknown
-> LLMs, no target labels and no model access.**
+把论文《面向未知大语言模型的中文 AI 生成文本检测：判别漂移的可预测性与
+无标签批校正》的方法做成一个可直接使用的在线检测服务。
 
-A deployable service for batch AI-generated-text (AIGT) detection, built on the method of the
-companion paper *"面向未知大语言模型的中文 AI 生成文本检测：判别漂移的可预测性与无标签批校正"*.
-Author identity is withheld in this repository for double-blind review.
+核心不是"再训一个更强的分类器"，而是**在拿不到目标模型标签的前提下，
+用一批文本自己把阈值校准回来**，同时给出"为什么要校正、能校正多少"的
+可解释诊断：
 
-Given a **batch** of texts from an unknown LLM, TTAScope returns a per-item AI probability,
-a batch-level verdict, and a drift diagnostic — without any label from the target domain and
-without access to the target model.
+- **判别漂移 Ξ**：漂移在判别方向上的有符号投影，决定跨模型衰减；
+- **推论 1 预测**：macro-F1 ≈ 1 − Φ(−Δ′/2)，实测 MAE 0.042；
+- **无标签选参**：11 个校正变体用一维两分量 GMM 在测试分数上解析预测
+  macro-F1，取最优，全程不碰目标域标签。
 
-**Live demo:** <http://106.54.192.87:8501/tta/> — paste a batch of Chinese text (or upload a
-file) to see per-item verdicts and the drift diagnostic. No data is retained server-side.
+---
 
-## What it reports
-
-- **Per-item** $P(\mathrm{AI})$ and verdict, with a confidence band.
-- **Batch diagnostic**: $\Xi_{\mathrm{AI}}$, $\Xi_{\mathrm{human}}$, $\Delta_T$, predicted F1,
-  and an explicit recommendation (correct / do not correct / not enough items).
-- **Batch-size gate**: below the usable batch size for a feature set the request is rejected
-  rather than silently answered, because the class-conditional estimate is unreliable there.
-
-## Layout
+## 1. 目录结构
 
 ```
-detector/       Library: features, TTA alignment, drift diagnostics, model wrapper
-app/            FastAPI service + single-page web UI
-deploy/         install.sh, nginx and systemd templates, upload.sh
-tests/          Smoke, remote, long-document, report-export and browser checks
+ttascope/
+├── detector/              核心库（自包含，可独立拷贝）
+│   ├── feature_extractor_15d.py   15 维手工特征，零外部依赖
+│   ├── features.py                特征集（15D / char_2_4 / roberta_frozen）
+│   ├── tta.py                     校正族 + 无标签选参准则
+│   ├── diagnostics.py             Ξ / Δ_T / 推论 1 预测
+│   └── model.py                   TTADetector：训练、检测、存取
+├── app/
+│   ├── server.py          FastAPI 服务
+│   └── web/index.html     单页界面（无构建步骤）
+├── models/                随产品发布的训练产物（.joblib）
+├── tools/
+│   ├── build_model.py     用实验语料训练并导出 models/
+│   └── validate.py        在目标 LLM 语料上复核与论文表格的一致性
+├── tests/
+│   ├── test_smoke.py      不依赖外部语料的冒烟测试
+│   ├── test_remote.py     打公网地址的线上冒烟测试
+│   ├── test_long.py       长文按句切块的端到端测试
+│   └── browser_check.js   无头 Edge 实测页面按钮（需 puppeteer-core）
+└── deploy/                upload.sh / install.sh / systemd / nginx
 ```
 
-## Install and run
+## 2. 本地运行
 
 ```bash
-pip install -r requirements.txt
-
-# local
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+python tools/build_model.py                 # 训练并导出 models/（约 1 分钟）
+python tests/test_smoke.py                  # 冒烟测试
 uvicorn app.server:app --host 127.0.0.1 --port 8511
-# then open http://localhost:8511/
+# 浏览器打开 http://127.0.0.1:8511/
 ```
 
-Models are loaded from `models/*.joblib` at startup (one file per feature set); override the
-directory with `TTASCOPE_MODELS`. **Model files are not included** — train them on your own
-corpus:
+Python ≥ 3.10。RoBERTa 表征需要额外装 `torch` 与 `transformers`，
+未安装时不会自动启用，也不影响另两个特征集。
 
-```python
-from detector import TTADetector
-det = TTADetector(feat='15D').fit(train_texts, train_labels)
-det.save('models/ttascope_15D.joblib')
-```
+## 3. 接口
 
-Behind nginx, serve the app under a sub-path (see `deploy/nginx-ttascope.conf`); the service
-itself listens on `127.0.0.1:8511` and is not exposed directly.
-
-## API
-
-| Endpoint | Method | Purpose |
+| 方法 | 路径 | 说明 |
 |---|---|---|
-| `/` | GET | Detection page |
-| `/health` | GET | Health check |
-| `/api/models` | GET | Loaded feature sets with their minimum / recommended batch sizes |
-| `/api/detect` | POST | `{texts, feat, mode}` → per-item scores, batch verdict, diagnostics |
+| GET | `/health` | 健康检查，返回已装载模型 |
+| GET | `/api/models` | 模型清单（特征集、维度、训练精度） |
+| POST | `/api/detect` | 批量检测，正文 `{texts, feat, mode}` |
 
-Minimum batch sizes are defined in one place in `detector/model.py` and delivered to the UI
-through `/api/models`, so the gate cannot drift between server and front end.
+`mode` 可取 `auto`（默认，无标签准则自动选参）或 10 个变体名之一：
+`none`、`bn`、`em_l0.5`、`em_l1.0`、`conf_l{0.5,1.0}_k{0.30,0.50,0.70}`。
 
-## Tests
+整批对齐 `bnc` 已移出候选族：论文表 S5 显示它损害排序质量（AUC），无标签
+选参准则在若干配置上会选中它并导致结果为负（§5.3）。校正实现与论文统一
+版一致（`detector/tta.py::tta_final`）：每轮迭代把批混合中心钉回
+½(μ0+μ1)，而非开头做一次整批预步。
+
+### 长文检测
+
+页面支持五种切分方式：按行（一行一条）、按段落（空行分段）、按句成块、
+按字数切块、整篇一条。长文整篇粘贴后选「按句成块」（推荐）或「按字数切块」，
+块大小 200–400 字；检测后页面给出**整篇结论**：AI 块占比、平均 P(AI)、
+混合度（人机段落混杂程度）。
+
+**数量门槛（硬约束）按特征集不同**，由 `/api/models` 下发，前后端共用
+`detector/model.py` 里的同一份定义：
+
+| 特征集 | 最小条数 | 诊断量稳定 |
+|---|---|---|
+| char_2_4 | **20** | 50 |
+| 15D | **50** | 100 |
+| roberta_frozen | 50 | 100 |
+
+低于门槛时按钮禁用、不给检测，输入框下方实时显示还差几条；服务端同样返回
+400，绕过前端也拦得住。条数在门槛与推荐规模之间时可检测，但黄条说明 Ξ 与
+Δ_T 波动较大、诊断量仅供参考。批次场景请补足行数，长文场景减小块大小即可
+增加块数（每块建议不少于 50 字）。单条短文无法检测——方法本质是批校正，
+不是单篇打分器。
+
+**为什么 15D 门槛更高**：小批次重采样实验（`exp/E31_small_batch.json`，
+n=10/20/30/40）显示，15 维特征的类条件对齐在该区间期望增益为负
+（−0.12 ~ −0.03，且有 28%–68% 的折"校正反而更差"）；字符 2-4gram 同期仍为
++0.12 ~ +0.19、劣化率 ≤12%。根源在类间距 Δ：15D Δ≈2.3，n≤40 时均值估计噪声
+已与类间距同量级；字符 n-gram Δ≈5.0，同样噪声相对无害。**放宽门槛不是保守，
+而是会给出比不校正更差的结果。**
+
+**交叉对照**：整篇结论会再用另一个特征集跑一遍；结论一致才标 ✅，不一致标
+⚠️ 并要求人工复核。若对照方未达其自身门槛（如 24 块时 15D 需要 50 条），
+对照会被**主动跳过**并说明原因，而不是拿一个在该规模上已知失效的结果去
+"验证"主结论。
+
+### 限流与资源护栏
+
+三道，由外到内：nginx 按 IP 限流 → body 大小 → 应用层批规模。
+
+| 层 | 位置 | 规则 |
+|---|---|---|
+| 检测接口速率 | nginx `location /tta/api/` | 2 r/s，突发 10（nodelay） |
+| 页面速率 | nginx `location /tta/` | 10 r/s，突发 40 |
+| 单 IP 并发 | nginx `limit_conn` | 6 |
+| 请求体 | nginx | ≤ 8 MB（文本经浏览器本地解析后才 POST 上来） |
+| 单批条数 | 应用 `MAX_ITEMS` | ≤ 2000，超出返回 400 |
+| 单批总量 | 应用 `MAX_CHARS` | ≤ 2,000,000 字，超出返回 400 |
+| 单条长度 | 应用 `MAX_ITEM_CHARS` | 超 20000 字先截断，响应带 `truncated` 计数 |
+
+检测是 CPU 密集且单 worker，一个超大请求占住 worker 等于整站不可用，所以
+限流之外还要有应用层护栏。限流命中统一返回 **429**，响应体是 JSON
+（`{"detail":"请求过于频繁…"}`）并带 `Retry-After: 2`，前端直接把 `detail`
+显示出来；批规模超限是 400 + 中文提示。`/health` 会回传 `limits` 三项数值，
+便于对端自检。
+
+zone 定义在 `deploy/nginx-ttascope-limits.conf`（必须 http 级），location
+片段在 `deploy/nginx-ttascope.conf`，两者由 `deploy/nginx_sync.py` 幂等写入
+站点配置（有哨兵标记就整段替换，写入前自动备份）。改模板后：
 
 ```bash
-python tests/test_smoke.py                       # offline, no server needed
-python tests/test_remote.py http://localhost:8501/tta
-python tests/test_long.py   http://localhost:8501/tta
-node tests/test_report.js                        # report export logic
-node tests/browser_check.js http://localhost:8501/tta/   # end-to-end (needs a browser)
+sudo python3 deploy/nginx_sync.py && sudo nginx -t && sudo systemctl reload nginx
 ```
 
-The remote tests default to `http://localhost:8501/tta`; pass a URL argument to point them
-elsewhere.
+### 上传文件
 
-## Known limits
+支持 `txt / md / csv / jsonl / log`，可多选；解析在浏览器本地完成，文件不上传服务器。
 
-- Requires a batch, not a single text. The method assumes the batch class prior is not
-  extremely imbalanced; when it is, the diagnostic says so instead of correcting silently.
-- Correction is a strictly monotone recalibration of the score: it moves the decision
-  threshold to the right place, it does not improve ranking quality. Under a fixed false
-  positive budget the detection rate is unchanged.
+- 编码：先按 UTF-8 解码，若出现替换字符则改用 GBK 重试并取坏字符更少者
+  （中文语料常见 GBK，直接按 UTF-8 读会成片乱码）；
+- CSV：优先认 `text/content/body/正文/文本/内容/段落` 等列名，认不出则取平均长度
+  最大的一列，并自动跳过表头行（列名短且明显短于数据行）；
+- JSONL：逐行取 `text/content/body/paragraph/abstract` 字段，非 JSON 行按原文保留；
+- 大文件：单文件超 8 MB 会跳过并在提示里说明，不会被静默截断。
 
-## License
+### 报告导出
 
-MIT — see `LICENSE`.
+检测完成后出现「报告导出」卡片，两种产物：
+
+| 产物 | 内容 |
+|---|---|
+| Markdown 报告 | 溯源信息 → 整篇/批次结论（含交叉对照）→ 漂移诊断全量表 → 候选变体打分表 → **逐段分析表**（序号/字数/P(AI)/距阈值/判定/摘要）→ 高置信段落 → **逐段原文** → 适用边界 |
+| 逐段分析 CSV | 序号、字数、P(AI)、判定、距阈值、原文全文（带 BOM，Excel 打开不乱码） |
+
+「距阈值」= |P(AI)−0.5|，越小说明该段落越贴判定边界、结论越不可靠，报告里用它排出
+「高置信段落」便于人工复核。页面渲染只取 500 条，导出时会自动按原参数重取全部结果，
+保证报告覆盖每一个段落。
+
+**默认特征集为 char_2_4**：实测整篇长文场景，字符级 TF-IDF 明显更稳
+（AI 长文判对 14/24 块），15D 手工特征在同一批上只判出 4/24 块、结论相反。
+15D 的价值在跨域稳健，不是整篇判定的首选。
+
+响应关键字段：
+
+```jsonc
+{
+  "n": 1000, "chosen": "conf_l1.0_k0.70", "predicted_f1": 0.9056,
+  "ai_rate": 0.486, "candidates": { "none": 0.80, "...": 0.0 },
+  "diag": { "Xi_ai": 0.98, "Xi_hu": -0.03, "Delta_T": 1.31,
+            "SNR_T": 0.42, "pred_f1": 0.74, "band": ">1.2（11 组）" },
+  "items": [ { "index": 0, "p_ai": 0.97, "label": "AI", "text": "…" } ]
+}
+```
+
+## 4. 与论文数字的一致性
+
+`tools/validate.py` 在五个目标 LLM 的整批语料上复核，实测（auto 为无标签
+自动选参，oracle 为用真值标签在候选族里取最优）：
+
+| 特征集 | 目标 | none | bn | em | auto | oracle |
+|---|---|---|---|---|---|---|
+| 15D | deepseek | 0.852 | 0.896 | 0.913 | 0.913 | 0.913 |
+| 15D | glm | 0.795 | 0.850 | 0.864 | 0.850 | 0.864 |
+| char 2-4 | deepseek | 0.801 | 0.880 | 0.890 | 0.889 | **0.906** |
+| char 2-4 | glm | 0.793 | 0.877 | 0.887 | 0.887 | **0.900** |
+
+与论文表 11 的 UBC 列逐格一致。**最有价值的一格**：字符级 TF-IDF 在 GLM 上
+不用任何异源数据，靠整批自适应把 0.793 拉到 0.900，超过用 20% 异源数据
+混合训练的 0.877。
+
+## 5. 部署到腾讯云
+
+```bash
+bash deploy/upload.sh ubuntu@106.54.192.87      # 上传最小运行集
+ssh ubuntu@106.54.192.87 "sudo bash /opt/ttascope/deploy/install.sh"
+```
+
+默认模式把服务挂在已放行的 8501 端口的 `/tta/` 子路径下，**不需要新增
+安全组规则**。`location /tta/` 单独关闭了站点口令，方便外部直接测试；
+若需限制访问，把该行改回站点同款的 HTTP Basic 口令两条指令
+（口令开关 + 口令文件指向）即可。要独立端口：
+
+```bash
+sudo bash deploy/install.sh --port 8510         # 需先在安全组放行 8510
+```
+
+运维：
+
+```bash
+systemctl status ttascope
+journalctl -u ttascope -f
+curl http://127.0.0.1:8511/health
+python tests/test_remote.py http://106.54.192.87:8501/tta
+```
+
+### 线上实测（2026-10-09）
+
+服务已部署于 `http://106.54.192.87:8501/tta/`，24 条混合批次（12 条 AI 风格
+/ 12 条人类随笔）实测，本地与线上逐格一致：
+
+| 特征集 | 选中变体 | 推论 1 预测 F1 | AI 占比 | 逐条命中 | 首包耗时 |
+|---|---|---|---|---|---|
+| 15D | em_l1.0 | 0.7697 | 0.25 | 18/24 | 149 ms |
+| char 2-4 | em_l0.5 | 0.9976 | 0.50 | 24/24 | 114 ms |
+
+恒等式 Δ_T = Δ − Ξ_ai + Ξ_hu 在两个特征集上的残差均为 0（`identity_resid`）。
+15D 命中偏低符合论文判断：手工风格特征是跨域稳健项，单域精度低于字符级
+TF-IDF，其价值体现在目标模型未知时的衰减更小。
+
+## 6. 适用边界
+
+- 方法作用于**一批**文本而非单条；批次少于 50 条时 Ξ 与 Δ_T 波动较大，
+  接口会在 `warn` 字段提示，判定仍可用但诊断量仅供参考。
+- 批次类先验严重失衡时，准则会退化为"不校正"（可检测出这一状态）。
+- 结论适用于"衰减尚未饱和"的目标；在多数变体已接近 1.0 的场景不宜外推。
+- 模型训练语料为 HC3-Chinese 中文问答域，跨域（如新闻、论文）需重新训练。

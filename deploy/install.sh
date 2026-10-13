@@ -58,25 +58,8 @@ systemctl is-active --quiet $SERVICE && echo "==> 服务已启动" || {
 # 3. nginx（仅子路径模式）
 if [ -z "$PUBLIC_PORT" ]; then
   if [ -f "$NGINX_CONF" ]; then
-    if ! grep -q "location /tta/" "$NGINX_CONF"; then
-      cp "$NGINX_CONF" "$NGINX_CONF.bak.$(date +%s)"
-      sed -e "s|__PORT__|$UPSTREAM_PORT|g" deploy/nginx-ttascope.conf > /tmp/tta-location.conf
-      # 占位符展开：检测页对外测试开放，不套用站点口令
-      python3 - <<'PY'
-p = '/tmp/tta-location.conf'
-s = open(p).read()
-s = s.replace('__AUTH_OFF__', 'auth_' 'basic off;')
-open(p, 'w').write(s)
-PY
-      # 插到 server 块的第一个 location 之前
-      awk '
-        /^    location/ && !done { while ((getline line < "/tmp/tta-location.conf") > 0) print line; done=1 }
-        { print }
-      ' "$NGINX_CONF" > /tmp/hybridscope.new && mv /tmp/hybridscope.new "$NGINX_CONF"
-      echo "==> 已插入 location /tta/（原配置备份为 $NGINX_CONF.bak.*）"
-    else
-      echo "==> location /tta/ 已存在，跳过"
-    fi
+    # 3a. 限流区（http 级）+ location 片段，幂等写入，改前自动备份
+    python3 deploy/nginx_sync.py --port "$UPSTREAM_PORT" || exit 1
     nginx -t && systemctl reload nginx && echo "==> nginx 已重载"
   else
     echo "!! 未找到 $NGINX_CONF，改用独立端口：sudo bash deploy/install.sh --port 8510"

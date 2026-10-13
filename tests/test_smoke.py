@@ -32,8 +32,12 @@ def test_fit_and_detect():
     assert 0.0 <= res['ai_rate'] <= 1.0
     assert abs(res['ai_rate'] - 0.5) < 0.2, res['ai_rate']
 
-    # 恒等式 Δ − Ξ_ai + Ξ_hu = Δ_T 应精确到数值噪声
-    assert abs(res['diag']['identity_resid']) < 1e-3, res['diag']
+    # 恒等式 Δ − Ξ_ai + Ξ_hu = Δ_T 应精确到数值噪声。
+    # 本用例的两类文本是同一句话重复 40 遍，类内方差≈0 使 Δ 放大到 1e17，
+    # 此时只能比相对误差（实测残差/Δ ≈ 3e-16），绝对阈值必然误报。
+    d = res['diag']
+    scale = max(abs(d['Delta']), abs(d['Delta_T']), 1.0)
+    assert abs(d['identity_resid']) / scale < 1e-9, d
 
 
 def test_explicit_modes():
@@ -41,8 +45,19 @@ def test_explicit_modes():
     texts = AI[:30] + HU[:30]
     y = np.array([1] * 30 + [0] * 30)
     det = TTADetector(feat='15D').fit(texts, y)
-    for m in ['none', 'bn', 'bnc', 'em_l1.0', 'conf_l1.0_k0.50']:
+    names = sorted(det._candidates(det.transform(texts)))
+    # 候选族必须是论文的 10 个统一变体，且不含整批对齐 bnc
+    assert len(names) == 10, names
+    assert 'bnc' not in names, names
+    for m in ['none', 'bn', 'em_l1.0', 'conf_l1.0_k0.50']:
         det.detect(texts, mode=m)
+    # bnc 不再是合法变体
+    try:
+        det.detect(texts, mode='bnc')
+    except KeyError:
+        pass
+    else:
+        raise AssertionError('bnc 应已从候选族移除')
 
 
 def test_pred_gmm_matches_supervised():
@@ -52,6 +67,32 @@ def test_pred_gmm_matches_supervised():
     f_sup, _ = tta.pred_f1(z, yhat)
     f_unsup, _ = tta.pred_gmm(z)
     assert abs(f_sup - f_unsup) < 0.05, (f_sup, f_unsup)
+
+
+def test_prior_reject_rule():
+    """前置拒绝规则：r_AI（未校正批次判为 AI 的比例）超过 0.64 即拒绝校正。
+
+    判据只依赖未校正后验、不使用目标域标签；「是否真的退回 none」由调用方
+    决定并写入 applied，显式指定变体时应保留用户意图。
+    """
+    from detector.diagnostics import REJECT_R_AI, prior_reject
+    assert REJECT_R_AI == 0.64
+
+    # 整批判为 AI：r_AI = 1.0，应触发
+    g = prior_reject(np.r_[np.ones(80) * 0.9])
+    assert g['r_ai'] == 1.0 and g['rejected'] and not g['applied']
+
+    # 整批判为人类：r_AI = 0.0，不应触发
+    g = prior_reject(np.r_[np.ones(80) * 0.1])
+    assert g['r_ai'] == 0.0 and not g['rejected']
+
+    # 恰好 60% 判为 AI：低于阈值，仍放行
+    g = prior_reject(np.r_[np.ones(60) * 0.8, np.ones(40) * 0.2])
+    assert g['r_ai'] == 0.6 and not g['rejected']
+
+    # 70% 判为 AI：超过阈值，应拒绝
+    g = prior_reject(np.r_[np.ones(70) * 0.8, np.ones(30) * 0.2])
+    assert g['r_ai'] == 0.7 and g['rejected']
 
 
 def test_corollary1_monotone():

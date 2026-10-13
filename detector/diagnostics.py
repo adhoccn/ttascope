@@ -22,6 +22,17 @@ from scipy.stats import norm
 GAIN_BANDS = [(0.3, 8, 0.001), (0.6, 6, 0.002), (1.2, 5, 0.031),
               (float('inf'), 11, 0.045)]
 
+# 类先验的前置拒绝规则（§5.4 / 表 S11）。
+#
+# 方法隐含 π≈0.5；当批次整批同源（π→1）时加权矩估计失效，校正不再带来收益
+# 反而造成 −0.024~−0.060 的损失。但类平衡告警本身不足以捕捉这一点：
+# 批次观测量满足仿射律 r_AI = FPR + π(TPR−FPR)，斜率 κ=TPR−FPR 恒小于 1，
+# 故 |r_AI−0.5| 系统性**低估**真实失衡（π=0.7 时 15 维/deepseek 的偏离仅
+# 0.008，告警完全静默）。因此把 r_AI 本身作为显式的前置判据：
+# 10 组配置、每格 5 次抽样下，可用区（π≤0.6）误触发率 0.00，
+# 危险区（π≥0.9）平均触发率 0.71。
+REJECT_R_AI = 0.64
+
 
 def estimate(X_src, y_src, X_tgt, gamma, ridge=1e-2):
     """估计目标批的判别漂移。
@@ -89,6 +100,21 @@ def estimate(X_src, y_src, X_tgt, gamma, ridge=1e-2):
         'band': band_of(xi_ai),
         'expected_gain': expected_gain(xi_ai),
     }
+
+
+def prior_reject(gamma, cut=REJECT_R_AI):
+    """类先验的前置拒绝判据（§5.4 / 表 S11）。
+
+    gamma : 未校正批次上每条文本属于 AI 的后验（不使用目标域标签）
+    cut   : 拒绝阈值，超过即认为批次疑似整批同源
+
+    返回 dict：r_ai / cut / rejected / applied，其中 applied 由调用方
+    在"确实把选参结果退回 none"后置 True——判据与是否执行分离，便于显式
+    指定变体时保留用户意图。
+    """
+    r_ai = float(np.mean(np.asarray(gamma, dtype=np.float64) > 0.5))
+    return {'r_ai': round(r_ai, 4), 'cut': cut,
+            'rejected': bool(r_ai > cut), 'applied': False}
 
 
 def pred_f1(sep):

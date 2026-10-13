@@ -1,7 +1,7 @@
 /** 生成一份真实报告样例（供阅读/评审用），不参与 CI。
  *
  *   NODE_PATH=<workspace>/node_modules node tests/gen_sample_report.js \
- *       http://localhost:8501/tta/  out.md
+ *       http://106.54.192.87:8501/tta/  out.md
  */
 const puppeteer = require('puppeteer-core');
 const fs = require('fs');
@@ -9,7 +9,7 @@ const os = require('os');
 const path = require('path');
 
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
-const URL = process.argv[2] || 'http://localhost:8501/tta/';
+const URL = process.argv[2] || 'http://106.54.192.87:8501/tta/';
 const OUT = process.argv[3] || path.join(__dirname, '..', 'sample_report.md');
 const TXT = path.join(__dirname, 'fixtures', 'sample.txt');
 

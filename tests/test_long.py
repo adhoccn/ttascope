@@ -1,6 +1,6 @@
 """长文端到端测试：整篇文本按句切块后检测，验证线上能否给出整篇结论。
 
-    python tests/test_long.py http://localhost:8501/tta
+    python tests/test_long.py http://106.54.192.87:8501/tta
 
 切分规则与前端 `splitTexts(..., 'sent', size)` 等价：按句切分后累积到
 size 字成一块，残余 ≥ 20 字单独成块，否则并入上一块。
@@ -85,7 +85,7 @@ def summarize(tag, doc, base, feat='char_2_4'):
 
 
 def main():
-    base = sys.argv[1] if len(sys.argv) > 1 else 'http://localhost:8501/tta'
+    base = sys.argv[1] if len(sys.argv) > 1 else 'http://106.54.192.87:8501/tta'
     summarize('AI 长文', AI_DOC, base)
     summarize('人类长文', HUMAN_DOC, base)
     print('\n注：单篇长文切出的块数通常不足 20，批校正与整篇结论此时波动很大，'

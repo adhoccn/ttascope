@@ -34,6 +34,13 @@ app = FastAPI(title='TTAScope', version='1.0.0',
 _MODELS = {}
 _START = time.time()
 
+# 资源护栏（最后一道）：nginx 已按 IP 限流（2r/s + 单 IP 并发 6）并限 body ≤ 8 MB，
+# 这里是防止单个超大请求长时间占住 worker——单 worker 部署下等于整站不可用。
+# 门槛数值与前端保持一致，超限时给出的提示可被直接展示。
+MAX_ITEMS = 2000        # 单批最多多少段（estimator 为 O(n·d)，再大收益递减）
+MAX_CHARS = 2_000_000   # 单批文本总字符数
+MAX_ITEM_CHARS = 20000  # 单条超长先截断，避免一条全文拖垮整批
+
 
 def load_models():
     _MODELS.clear()
@@ -49,7 +56,7 @@ def load_models():
             print('[warn] 模型装载失败 %s: %s' % (p.name, e), flush=True)
 
 
-_WARMUP = ["人工智能正在深刻改变各行各业的生产方式，其重要性不言而喻。首先，它能够显著提升生产效率；其次，它可以降低运营成本。",
+_WARMUP_BASE = ["人工智能正在深刻改变各行各业的生产方式，其重要性不言而喻。首先，它能够显著提升生产效率；其次，它可以降低运营成本。",
            "机器学习是人工智能的重要分支，其核心思想是通过数据驱动的方式让模型自动学习规律，近年来取得了突破性进展。",
            "随着数字化转型的深入推进，企业需要构建更加敏捷的技术架构，一方面保障稳定性，另一方面兼顾可扩展性。",
            "在大数据时代背景下，数据已经成为重要的生产要素，如何有效采集、存储和分析数据是关键问题。",
@@ -59,6 +66,26 @@ _WARMUP = ["人工智能正在深刻改变各行各业的生产方式，其重�
            "说实话我也不是很懂这个，就是随便看看，你要是问我为什么，我大概也说不太清楚，差不多得了。",
            "昨天跟朋友出去吃饭，点了好多菜，结果根本吃不完，最后打包带回来了，那家店味道还挺不错的。",
            "我跟你说啊，这个东西真的挺有意思的，一开始我也没当回事，后来发现还挺好玩的，就是有点费时间。"]
+
+# 预热必须够条数才跑得动：min_n 最高的是 15D（50 条），原先只有 10 条会被
+# 门槛直接拒绝，warmup 全程空转，首包仍要付惰性导入 + 首次分配的开销（约 3 s）。
+# 这里用 10 条基础句循环错位拼出 60 条互不相同的文本，避免重复到类内方差为 0。
+_WARMUP_N = max(min_n(f) for f in ('15D', 'char_2_4', 'roberta_frozen')) + 10
+
+
+def _build_warmup(n):
+    out, k = [], 0
+    while len(out) < n:
+        for i, b in enumerate(_WARMUP_BASE):
+            j = _WARMUP_BASE[(i + k) % len(_WARMUP_BASE)]
+            out.append(b if k == 0 else '%s 补充第%d点：%s' % (b, k, j))
+            if len(out) >= n:
+                break
+        k += 1
+    return out[:n]
+
+
+_WARMUP = _build_warmup(_WARMUP_N)
 
 
 def warmup():
@@ -84,7 +111,9 @@ class DetectRequest(BaseModel):
 @app.get('/health')
 def health():
     return {'status': 'ok', 'models': sorted(_MODELS),
-            'uptime_sec': round(time.time() - _START, 1)}
+            'uptime_sec': round(time.time() - _START, 1),
+            'limits': {'max_items': MAX_ITEMS, 'max_chars': MAX_CHARS,
+                       'max_item_chars': MAX_ITEM_CHARS}}
 
 
 @app.get('/api/models')
@@ -110,6 +139,18 @@ def detect(req: DetectRequest):
                  '对齐的期望增益为负，强行检测会得到比不校正更差的结果。'
                  '请补充文本或改用门槛更低的字符 2-4gram。'
                  % (req.feat, need, len(texts)))
+    if len(texts) > MAX_ITEMS:
+        raise HTTPException(400, '单批最多 %d 条，当前 %d 条：请分批提交，'
+                                 '或增大切分块大小以降低块数。'
+                                 % (MAX_ITEMS, len(texts)))
+    n_trunc = sum(1 for t in texts if len(t) > MAX_ITEM_CHARS)
+    if n_trunc:
+        texts = [t[:MAX_ITEM_CHARS] for t in texts]
+    total = sum(len(t) for t in texts)
+    if total > MAX_CHARS:
+        raise HTTPException(400, '单批文本总量 %d 字，超过 %d 字上限：'
+                                 '请分批提交。' % (total, MAX_CHARS))
+    res_extra = {'truncated': n_trunc, 'max_item_chars': MAX_ITEM_CHARS} if n_trunc else {}
     t0 = time.time()
     try:
         res = _MODELS[req.feat]['det'].detect(texts, mode=req.mode,
@@ -118,6 +159,7 @@ def detect(req: DetectRequest):
         raise HTTPException(500, '检测失败：%s' % e)
     res['elapsed_ms'] = int((time.time() - t0) * 1000)
     res['mode_requested'] = req.mode
+    res.update(res_extra)
     return JSONResponse(res)
 
 
